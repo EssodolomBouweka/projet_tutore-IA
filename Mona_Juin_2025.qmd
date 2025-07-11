@@ -1,0 +1,191 @@
+---
+title: "IMPUTATION"
+author: "AMANA"
+format: html
+editor: visual
+---
+
+#  Data
+
+
+```{r}
+library(readxl)
+Mona_data <- read_excel("C:/Users/DELL/Desktop/Data/Mona/Juin 2025/New XLSX Worksheet.xlsx", 
+    sheet = "Feuil1")
+Mona_data
+```
+
+
+```{python}
+df=r.Mona_data
+```
+
+
+
+# Methode ordinaire
+```{python}
+import pandas as pd
+import numpy as np
+
+
+# Liste des colonnes numériques où vous voulez remplacer les NaN
+colonnes_numeriques = ['lgec', 'lrec', 'lto', 'lnei', 'GEC', 'REC']
+
+## Méthode 1: Remplacer par la médiane du pays
+def remplacer_par_median(groupe):
+    return groupe.fillna(groupe.median())
+
+df[colonnes_numeriques] = df.groupby('Country Name')[colonnes_numeriques].transform(remplacer_par_median)
+
+## Méthode 2: Remplacer par la moyenne du pays (alternative)
+# def remplacer_par_moyenne(groupe):
+#     return groupe.fillna(groupe.mean())
+# 
+# df[colonnes_numeriques] = df.groupby('Country Name')[colonnes_numeriques].transform(remplacer_par_moyenne)
+
+# Méthode 3: Interpolation par pays (pour des séries temporelles)
+df = df.groupby('Country Name').apply(lambda x: x.interpolate())
+
+## Méthode 4: Remplissage avant/arrière par pays
+# df = df.groupby('Country Name').fillna(method='ffill').fillna(method='bfill')
+
+# Si certaines valeurs manquantes persistent (pays avec toutes valeurs manquantes), remplacer par 0 ou autre
+df[colonnes_numeriques] = df[colonnes_numeriques].fillna(0)  # ou une autre valeur par défaut
+```
+
+
+
+
+
+# RANDOM FOREST IMPUTATION 
+```{python}
+from sklearn.ensemble import RandomForestRegressor
+
+def rf_imputation(df, target_cols, group_col='Country Name'):
+    df_imputed = df.copy()
+    
+    for col in target_cols:
+        # Séparer données complètes et manquantes
+        known = df_imputed[df_imputed[col].notna()]
+        unknown = df_imputed[df_imputed[col].isna()]
+        
+        if len(unknown) > 0:
+            # Préparer les features (exclure la colonne cible et les autres colonnes à imputer)
+            features = [c for c in df.columns if c not in target_cols and c != group_col and df[c].dtype in ['int64', 'float64']]
+            
+            X_train = known[features]
+            y_train = known[col]
+            
+            # Entraîner un modèle par pays
+            for country in unknown[group_col].unique():
+                country_mask = unknown[group_col] == country
+                country_unknown = unknown[country_mask]
+                
+                if len(country_unknown) > 0 and len(known[known[group_col] == country]) > 0:
+                    country_known = known[known[group_col] == country]
+                    
+                    if len(country_known) >= 5:  # Minimum 5 observations pour entraîner
+                        model = RandomForestRegressor(n_estimators=100, random_state=42)
+                        model.fit(country_known[features], country_known[col])
+                        
+                        # Prédire les valeurs manquantes
+                        preds = model.predict(country_unknown[features])
+                        df_imputed.loc[country_unknown.index, col] = preds
+    
+    return df_imputed
+
+df = rf_imputation(df, cols_to_impute)
+df
+```
+
+
+
+```{r}
+Mona_data
+```
+
+
+
+```{r}
+df_py=py$df
+openxlsx::write.xlsx(df_py,"RANDOM_FOREST_Metthod_Imput_df.xlsx",asTable = TRUE)
+```
+
+
+
+# RPART
+
+```{r}
+library(rpart)
+library(dplyr)
+
+rpart_impute_by_country <- function(data, cols_to_impute, group_col = "Country Name") {
+  # Créer une copie du dataframe pour modification
+  imputed_data <- data
+  
+  for(col in cols_to_impute) {
+    # Identifier les lignes avec valeurs manquantes pour cette colonne
+    na_rows <- is.na(imputed_data[[col]])
+    
+    if(any(na_rows)) {
+      # Séparer les données complètes et incomplètes
+      complete_data <- imputed_data[!na_rows, ]
+      incomplete_data <- imputed_data[na_rows, ]
+      
+      # Pour chaque pays avec des valeurs manquantes
+      countries_with_na <- unique(incomplete_data[[group_col]])
+      
+      for(country in countries_with_na) {
+        # Données d'entraînement pour ce pays (valeurs non manquantes)
+        train_data <- complete_data[complete_data[[group_col]] == country, ]
+        
+        # Si pas assez de données pour ce pays, utiliser tous les pays
+        if(nrow(train_data) < 5) {
+          train_data <- complete_data
+        }
+        
+        # Si on a des données pour entraîner le modèle
+        if(nrow(train_data) > 0) {
+          # Créer la formule pour le modèle
+          other_cols <- setdiff(cols_to_impute, col)
+          formula <- as.formula(paste(col, "~", paste(other_cols, collapse = "+")))
+          
+          # Entraîner le modèle rpart
+          model <- rpart(formula, 
+                        data = train_data, 
+                        method = "anova", 
+                        control = rpart.control(minsplit = 2, cp = 0.01))
+          
+          # Données à imputer pour ce pays
+          to_impute <- incomplete_data[incomplete_data[[group_col]] == country, ]
+          
+          # Faire les prédictions si le modèle a pu être créé
+          if(!is.null(model)) {
+            preds <- predict(model, newdata = to_impute)
+            imputed_data[rownames(to_impute), col] <- preds
+          }
+        }
+      }
+    }
+  }
+  
+  # Remplacer les valeurs restantes (si modèle échoue) par médiane par pays
+  imputed_data <- imputed_data %>%
+    group_by(!!sym(group_col)) %>%
+    mutate(across(all_of(cols_to_impute), ~ {
+      ifelse(is.na(.x), median(.x, na.rm = TRUE), .x)
+    })) %>%
+    ungroup()
+  
+  return(imputed_data)
+}
+
+# Liste des colonnes à imputer
+cols_to_impute <- c("lgec", "lrec", "lto", "lnei", "GEC", "REC")
+
+# Application de la fonction
+df_imputed <- rpart_impute_by_country(Mona_data, cols_to_impute)
+
+openxlsx::write.xlsx(df_imputed,"RPART_Metthod_Imput_df.xlsx",asTable = TRUE)
+```
+
