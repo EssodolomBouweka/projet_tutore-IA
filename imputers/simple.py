@@ -26,10 +26,21 @@ def impute_constant_categorical(df, value="Inconnu"):
     df[categorical_cols] = df[categorical_cols].fillna(value)
     return df
 
-# Imputation par suppression des lignes contenant des valeurs manquantes
+# Suppression des lignes avec au moins 60% de valeurs manquantes
 def delete_rows(df):
-    return df.dropna()
+    """
+    Supprime les lignes contenant 60% ou plus de valeurs manquantes.
+    """
+    nan_ratio_per_row = df.isna().mean(axis=1)
+    rows_to_drop = nan_ratio_per_row[nan_ratio_per_row >= 0.6].index
+    return df.drop(index=rows_to_drop)
 
-# Imputation par suppression des colonnes contenant des valeurs manquantes
+# Suppression des colonnes avec au moins 60% de valeurs manquantes
 def delete_columns(df):
-    return df.dropna(axis=1)
+    """
+    Supprime les colonnes contenant 60% ou plus de valeurs manquantes.
+    """
+    nan_ratio_per_col = df.isna().mean()
+    cols_to_drop = nan_ratio_per_col[nan_ratio_per_col >= 0.6].index
+    return df.drop(columns=cols_to_drop)
+
